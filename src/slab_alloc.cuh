@@ -14,26 +14,29 @@
  * limitations under the License.
  */
 
+#pragma once
+#include <stdint.h>
+
 template <uint32_t LOG_NUM_MEM_BLOCKS_,
           uint32_t NUM_SUPER_BLOCKS_ALLOCATOR_,
           uint32_t MEM_UNIT_WARP_MULTIPLES_ = 1>
 class SlabAllocLight {
  public:
   // fixed parameters for the SlabAllocLight
-  constexpr uint32_t NUM_MEM_UNITS_PER_BLOCK_ = 1024;
-  constexpr uint32_t NUM_BITMAP_PER_MEM_BLOCK_ = 32;
-  constexpr uint32_t BITMAP_SIZE_ = 32;
-  constexpr uint32_t WARP_SIZE_ = 32;
-  constexpr uint32_t NUM_MEM_UNIT_SIZE_ = MEM_UNIT_WARP_MULTIPLES_ * WARP_SIZE_;
-  constexpr uint32_t SUPER_BLOCK_BIT_OFFSET_ALLOC_ = 27;
-  constexpr uint32_t MEM_BLOCK_BIT_OFFSET_ALLOC_ = 10;
-  constexpr uint32_t MEM_UNIT_BIT_OFFSET_ALLOC_ = 5;
-  constexpr uint32_t NUM_MEM_BLOCKS_PER_SUPER_BLOCK_ =
+  static constexpr uint32_t NUM_MEM_UNITS_PER_BLOCK_ = 1024;
+  static constexpr uint32_t NUM_BITMAP_PER_MEM_BLOCK_ = 32;
+  static constexpr uint32_t BITMAP_SIZE_ = 32;
+  static constexpr uint32_t WARP_SIZE_ = 32;
+  static constexpr uint32_t MEM_UNIT_SIZE_ = MEM_UNIT_WARP_MULTIPLES_ * WARP_SIZE_;
+  static constexpr uint32_t SUPER_BLOCK_BIT_OFFSET_ALLOC_ = 27;
+  static constexpr uint32_t MEM_BLOCK_BIT_OFFSET_ALLOC_ = 10;
+  static constexpr uint32_t MEM_UNIT_BIT_OFFSET_ALLOC_ = 5;
+  static constexpr uint32_t NUM_MEM_BLOCKS_PER_SUPER_BLOCK_ =
       (1 << LOG_NUM_MEM_BLOCKS_);
-  constexpr uint32_t MEM_BLOCK_SIZE_ = NUM_MEM_UNITS_PER_BLOCK_ * MEM_UNIT_SIZE;
-  constexpr uint32_t SUPER_BLOCK_SIZE_ =
+  static constexpr uint32_t MEM_BLOCK_SIZE_ = NUM_MEM_UNITS_PER_BLOCK_ * MEM_UNIT_SIZE_;
+  static constexpr uint32_t SUPER_BLOCK_SIZE_ =
       ((BITMAP_SIZE_ + MEM_BLOCK_SIZE_) * NUM_MEM_BLOCKS_PER_SUPER_BLOCK_);
-  constexpr uint32_t MEM_BLOCK_OFFSET_ =
+  static constexpr uint32_t MEM_BLOCK_OFFSET_ =
       (BITMAP_SIZE_ * NUM_MEM_BLOCKS_PER_SUPER_BLOCK_);
 
   using SlabAllocAddressT = uint32_t;
@@ -44,7 +47,7 @@ class SlabAllocLight {
 
   // hash_coef (register): used as (16 bits, 16 bits) for hashing
   uint32_t hash_coef;  // a random 32-bit
-  uint32_t num_super_blocks;
+  static constexpr uint32_t num_super_blocks = NUM_SUPER_BLOCKS_ALLOCATOR_;
 
   // resident_index: (register)
   // should indicate what memory block and super block is currently resident
@@ -56,6 +59,24 @@ class SlabAllocLight {
   uint32_t super_block_index;
   uint32_t allocated_index;  // to be asked via shuffle after
 
+  // ========= member functions:
+  // =========
+  // constructor:
+  // =========
+  SlabAllocLight()
+      : d_super_blocks(nullptr),
+        resident_index(0),
+        num_attempts(0),
+        super_block_index(0) {
+    hash_coef = rand();
+  }
+
+  // =========
+  // destructor:
+  // =========
+  ~SlabAllocLight() {}
+
+  // =========
   __device__ __host__ __forceinline__ uint32_t
   get_super_block_index(SlabAllocAddressT address) const {
     return address >> SUPER_BLOCK_BIT_OFFSET_ALLOC_;
@@ -67,7 +88,7 @@ class SlabAllocLight {
   }
 
   __device__ __host__ __forceinline__ SlabAllocGlobalOffsetT
-      get_mem_block_address const(SlabAllocAddressT address) {
+      get_mem_block_address(SlabAllocAddressT address) const {
     return (MEM_BLOCK_OFFSET_ + get_mem_block_index(address) * MEM_BLOCK_SIZE_);
   }
 
