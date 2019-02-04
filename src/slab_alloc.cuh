@@ -42,7 +42,7 @@ class SlabAllocLight {
       (BITMAP_SIZE_ * NUM_MEM_BLOCKS_PER_SUPER_BLOCK_);
 
   using SlabAllocAddressT = uint32_t;
-  using SlabAllocGlobalOffsetT = uint32_t;
+  using SlabAllocAddressIndexT = uint32_t;
 
   // a pointer to each super-block
   uint32_t* d_super_blocks_;
@@ -113,7 +113,7 @@ class SlabAllocLight {
     return ((address >> MEM_BLOCK_BIT_OFFSET_ALLOC_) & 0x1FFFF);
   }
 
-  __device__ __host__ __forceinline__ SlabAllocGlobalOffsetT
+  __device__ __host__ __forceinline__ SlabAllocAddressIndexT
       get_mem_block_address(SlabAllocAddressT address) const {
     return (MEM_BLOCK_OFFSET_ + get_mem_block_index(address) * MEM_BLOCK_SIZE_);
   }
@@ -123,7 +123,7 @@ class SlabAllocLight {
     return address & 0x3FF;
   }
 
-  __device__ __host__ __forceinline__ SlabAllocGlobalOffsetT
+  __device__ __host__ __forceinline__ SlabAllocAddressIndexT
   get_mem_unit_address(SlabAllocAddressT address) {
     return get_mem_unit_index(address) * MEM_UNIT_SIZE_;
   }
@@ -283,15 +283,15 @@ class SlabAllocLight {
     Since it is untouched, there shouldn't be any worries for the actual memory contents 
     to be reset again.
   */
-  __device__ __forceinline__ void free_untouched(uint32_t ptr) {
+  __device__ __forceinline__ void free_untouched(SlabAllocAddressT ptr) {
     atomicAnd(d_super_blocks_ + get_super_block_index(ptr) * SUPER_BLOCK_SIZE_ +
                   get_mem_block_index(ptr) * BITMAP_SIZE_ +
                   (get_mem_unit_index(ptr) >> 5),
               ~(1 << (get_mem_unit_index(ptr) & 0x1F)));
   }
 
-  __host__ __device__ __forceinline__ uint32_t
-  address_decoder(uint32_t address_ptr_index) {
+  __host__ __device__ __forceinline__ SlabAllocAddressT
+  address_decoder(SlabAllocAddressIndexT address_ptr_index) {
     return get_super_block_index(address_ptr_index) * SUPER_BLOCK_SIZE_ +
            get_mem_block_address(address_ptr_index) +
            get_mem_unit_index(address_ptr_index) * MEM_UNIT_WARP_MULTIPLES_ *
@@ -299,7 +299,7 @@ class SlabAllocLight {
   }
 
   __host__ __device__ __forceinline__ void print_address(
-      uint32_t address_ptr_index) {
+      SlabAllocAddressIndexT address_ptr_index) {
     printf(
         "Super block Index: %d, Memory block index: %d, Memory unit index: "
         "%d\n",
