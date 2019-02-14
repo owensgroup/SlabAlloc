@@ -63,6 +63,7 @@ class SlabAllocLightContext {
     resident_index_ = 0;
     super_block_index_ = 0;
     allocated_index_ = 0;
+    return *this;
   }
 
   ~SlabAllocLightContext() {}
@@ -301,7 +302,7 @@ template <uint32_t LOG_NUM_MEM_BLOCKS_,
           uint32_t NUM_SUPER_BLOCKS_ALLOCATOR_,
           uint32_t MEM_UNIT_WARP_MULTIPLES_ = 1>
 class SlabAllocLight {
- public:
+ private:
   // a pointer to each super-block
   uint32_t* d_super_blocks_;
 
@@ -314,7 +315,7 @@ class SlabAllocLight {
                         MEM_UNIT_WARP_MULTIPLES_>
       slab_alloc_context_;
 
-  // ========= member functions:
+ public:
   // =========
   // constructor:
   // =========
@@ -355,4 +356,14 @@ class SlabAllocLight {
   // destructor:
   // =========
   ~SlabAllocLight() { CHECK_ERROR(cudaFree(d_super_blocks_)); }
+
+  // =========
+  // Helper member functions:
+  // =========
+  SlabAllocLightContext<LOG_NUM_MEM_BLOCKS_,
+                        NUM_SUPER_BLOCKS_ALLOCATOR_,
+                        MEM_UNIT_WARP_MULTIPLES_>*
+  getContextPtr() {
+    return &slab_alloc_context_;
+  }
 };
