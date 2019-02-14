@@ -55,6 +55,16 @@ class SlabAllocLightContext {
         resident_index_(0),
         super_block_index_(0),
         allocated_index_(0) {}
+
+  SlabAllocLightContext& operator=(const SlabAllocLightContext& rhs) {
+    d_super_blocks_ = rhs.d_super_blocks_;
+    hash_coef_ = rhs.hash_coef_;
+    num_attempts_ = 0;
+    resident_index_ = 0;
+    super_block_index_ = 0;
+    allocated_index_ = 0;
+  }
+
   ~SlabAllocLightContext() {}
 
   void initParameters(uint32_t* d_super_block, uint32_t hash_coef) {
