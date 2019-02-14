@@ -19,85 +19,47 @@
 #include <iostream>
 #include "slab_alloc_global.cuh"
 
+/*
+ * This class does not own any memory, and will be shallowly copied into device
+ * kernel
+ */
 template <uint32_t LOG_NUM_MEM_BLOCKS_,
           uint32_t NUM_SUPER_BLOCKS_ALLOCATOR_,
           uint32_t MEM_UNIT_WARP_MULTIPLES_ = 1>
-class SlabAllocLight {
+class SlabAllocLightContext {
  public:
   // fixed parameters for the SlabAllocLight
   static constexpr uint32_t NUM_MEM_UNITS_PER_BLOCK_ = 1024;
   static constexpr uint32_t NUM_BITMAP_PER_MEM_BLOCK_ = 32;
   static constexpr uint32_t BITMAP_SIZE_ = 32;
   static constexpr uint32_t WARP_SIZE_ = 32;
-  static constexpr uint32_t MEM_UNIT_SIZE_ = MEM_UNIT_WARP_MULTIPLES_ * WARP_SIZE_;
+  static constexpr uint32_t MEM_UNIT_SIZE_ =
+      MEM_UNIT_WARP_MULTIPLES_ * WARP_SIZE_;
   static constexpr uint32_t SUPER_BLOCK_BIT_OFFSET_ALLOC_ = 27;
   static constexpr uint32_t MEM_BLOCK_BIT_OFFSET_ALLOC_ = 10;
   static constexpr uint32_t MEM_UNIT_BIT_OFFSET_ALLOC_ = 5;
   static constexpr uint32_t NUM_MEM_BLOCKS_PER_SUPER_BLOCK_ =
       (1 << LOG_NUM_MEM_BLOCKS_);
-  static constexpr uint32_t MEM_BLOCK_SIZE_ = NUM_MEM_UNITS_PER_BLOCK_ * MEM_UNIT_SIZE_;
+  static constexpr uint32_t MEM_BLOCK_SIZE_ =
+      NUM_MEM_UNITS_PER_BLOCK_ * MEM_UNIT_SIZE_;
   static constexpr uint32_t SUPER_BLOCK_SIZE_ =
       ((BITMAP_SIZE_ + MEM_BLOCK_SIZE_) * NUM_MEM_BLOCKS_PER_SUPER_BLOCK_);
   static constexpr uint32_t MEM_BLOCK_OFFSET_ =
       (BITMAP_SIZE_ * NUM_MEM_BLOCKS_PER_SUPER_BLOCK_);
-
-  using SlabAllocAddressT = uint32_t;
-  using SlabAllocAddressIndexT = uint32_t;
-
-  // a pointer to each super-block
-  uint32_t* d_super_blocks_;
-
-  // hash_coef (register): used as (16 bits, 16 bits) for hashing
-  uint32_t hash_coef_;  // a random 32-bit
   static constexpr uint32_t num_super_blocks_ = NUM_SUPER_BLOCKS_ALLOCATOR_;
 
-  // resident_index: (register)
-  // should indicate what memory block and super block is currently resident
-  // (16 bits 			+ 5 bits)
-  // (memory block 	+ super block)
-  uint32_t num_attempts_;
-  uint32_t resident_index_;
-  uint32_t resident_bitmap_;
-  uint32_t super_block_index_;
-  uint32_t allocated_index_;  // to be asked via shuffle after
-
-  // ========= member functions:
-  // =========
-  // constructor:
-  // =========
-  SlabAllocLight()
+  SlabAllocLightContext()
       : d_super_blocks_(nullptr),
-        resident_index_(0),
+        hash_coef_(0),
         num_attempts_(0),
-        super_block_index_(0) {
-    hash_coef_ = rand();
+        resident_index_(0),
+        super_block_index_(0),
+        allocated_index_(0) {}
+  ~SlabAllocLightContext() {}
 
-    // In the light version, we put num_super_blocks super blocks within a
-    // single array
-    CHECK_ERROR(
-        cudaMalloc((void**)&d_super_blocks_,
-                   SUPER_BLOCK_SIZE_ * num_super_blocks_ * sizeof(uint32_t)));
-
-    for (int i = 0; i < num_super_blocks_; i++) {
-      // setting bitmaps into zeros:
-      CHECK_ERROR(cudaMemset(
-          d_super_blocks_ + i * SUPER_BLOCK_SIZE_, 0x00,
-          NUM_MEM_BLOCKS_PER_SUPER_BLOCK_ * BITMAP_SIZE_ * sizeof(uint32_t)));
-      // setting empty memory units into ones:
-      CHECK_ERROR(
-          cudaMemset(d_super_blocks_ + i * SUPER_BLOCK_SIZE_ +
-                         (NUM_MEM_BLOCKS_PER_SUPER_BLOCK_ * BITMAP_SIZE_),
-                     0xFF,
-                     MEM_BLOCK_SIZE_ * NUM_MEM_BLOCKS_PER_SUPER_BLOCK_ *
-                         sizeof(uint32_t)));
-    }
-  }
-
-  // =========
-  // destructor:
-  // =========
-  ~SlabAllocLight() {
-    CHECK_ERROR(cudaFree(d_super_blocks_));
+  void initParameters(uint32_t* d_super_block, uint32_t hash_coef) {
+    d_super_blocks_ = d_super_block;
+    hash_coef_ = hash_coef;
   }
 
   // =========
@@ -114,7 +76,7 @@ class SlabAllocLight {
   }
 
   __device__ __host__ __forceinline__ SlabAllocAddressIndexT
-      get_mem_block_address(SlabAllocAddressT address) const {
+  get_mem_block_address(SlabAllocAddressT address) const {
     return (MEM_BLOCK_OFFSET_ + get_mem_block_index(address) * MEM_BLOCK_SIZE_);
   }
 
@@ -128,9 +90,6 @@ class SlabAllocLight {
     return get_mem_unit_index(address) * MEM_UNIT_SIZE_;
   }
 
-  // =========
-  // member functions:
-  // =========
   // called at the beginning of the kernel:
   __device__ __forceinline__ void create_mem_block_index(
       uint32_t global_warp_id) {
@@ -146,9 +105,8 @@ class SlabAllocLight {
     super_block_index_++;
     super_block_index_ =
         (super_block_index_ == num_super_blocks_) ? 0 : super_block_index_;
-    resident_index_ =
-        (hash_coef_ * (global_warp_id + num_attempts_)) >>
-        (32 - LOG_NUM_MEM_BLOCKS_);
+    resident_index_ = (hash_coef_ * (global_warp_id + num_attempts_)) >>
+                      (32 - LOG_NUM_MEM_BLOCKS_);
     // loading the assigned memory block:
     resident_bitmap_ =
         *((d_super_blocks_ + super_block_index_ * SUPER_BLOCK_SIZE_) +
@@ -162,9 +120,9 @@ class SlabAllocLight {
     create_mem_block_index(tid >> 5);
 
     // loading the assigned memory block:
-    resident_bitmap_ = *(d_super_blocks_ +
-                                super_block_index_ * SUPER_BLOCK_SIZE_ +
-                                resident_index_ * BITMAP_SIZE_ + laneId);
+    resident_bitmap_ =
+        *(d_super_blocks_ + super_block_index_ * SUPER_BLOCK_SIZE_ +
+          resident_index_ * BITMAP_SIZE_ + laneId);
     allocated_index_ = 0xFFFFFFFF;
   }
 
@@ -278,11 +236,11 @@ class SlabAllocLight {
     return allocated_result;
   }
 
-    /*
-    This function, frees a recently allocated memory unit by a single thread.
-    Since it is untouched, there shouldn't be any worries for the actual memory contents 
-    to be reset again.
-  */
+  /*
+  This function, frees a recently allocated memory unit by a single thread.
+  Since it is untouched, there shouldn't be any worries for the actual memory
+  contents to be reset again.
+*/
   __device__ __forceinline__ void free_untouched(SlabAllocAddressT ptr) {
     atomicAnd(d_super_blocks_ + get_super_block_index(ptr) * SUPER_BLOCK_SIZE_ +
                   get_mem_block_index(ptr) * BITMAP_SIZE_ +
@@ -307,4 +265,84 @@ class SlabAllocLight {
         get_mem_block_index(address_ptr_index),
         get_mem_unit_index(address_ptr_index));
   }
+
+ private:
+  // a pointer to each super-block
+  uint32_t* d_super_blocks_;
+
+  // hash_coef (register): used as (16 bits, 16 bits) for hashing
+  uint32_t hash_coef_;  // a random 32-bit
+
+  // resident_index: (register)
+  // should indicate what memory block and super block is currently resident
+  // (16 bits       + 5 bits)
+  // (memory block  + super block)
+  uint32_t num_attempts_;
+  uint32_t resident_index_;
+  uint32_t resident_bitmap_;
+  uint32_t super_block_index_;
+  uint32_t allocated_index_;  // to be asked via shuffle after
+};
+
+/*
+ * This class owns the memory for the allocator on the device
+ */
+template <uint32_t LOG_NUM_MEM_BLOCKS_,
+          uint32_t NUM_SUPER_BLOCKS_ALLOCATOR_,
+          uint32_t MEM_UNIT_WARP_MULTIPLES_ = 1>
+class SlabAllocLight {
+ public:
+  // a pointer to each super-block
+  uint32_t* d_super_blocks_;
+
+  // hash_coef (register): used as (16 bits, 16 bits) for hashing
+  uint32_t hash_coef_;  // a random 32-bit
+
+  // the context class is actually copied shallowly into GPU device
+  SlabAllocLightContext<LOG_NUM_MEM_BLOCKS_,
+                        NUM_SUPER_BLOCKS_ALLOCATOR_,
+                        MEM_UNIT_WARP_MULTIPLES_>
+      slab_alloc_context_;
+
+  // ========= member functions:
+  // =========
+  // constructor:
+  // =========
+  SlabAllocLight() : d_super_blocks_(nullptr), hash_coef_(0) {
+    // random coefficients for allocator's hash function
+    std::mt19937 rng(time(0));
+    hash_coef_ = rng();
+
+    // In the light version, we put num_super_blocks super blocks within a
+    // single array
+    CHECK_ERROR(cudaMalloc((void**)&d_super_blocks_,
+                           slab_alloc_context_.SUPER_BLOCK_SIZE_ *
+                               slab_alloc_context_.num_super_blocks_ *
+                               sizeof(uint32_t)));
+
+    for (int i = 0; i < slab_alloc_context_.num_super_blocks_; i++) {
+      // setting bitmaps into zeros:
+      CHECK_ERROR(cudaMemset(
+          d_super_blocks_ + i * slab_alloc_context_.SUPER_BLOCK_SIZE_, 0x00,
+          slab_alloc_context_.NUM_MEM_BLOCKS_PER_SUPER_BLOCK_ *
+              slab_alloc_context_.BITMAP_SIZE_ * sizeof(uint32_t)));
+      // setting empty memory units into ones:
+      CHECK_ERROR(cudaMemset(
+          d_super_blocks_ + i * slab_alloc_context_.SUPER_BLOCK_SIZE_ +
+              (slab_alloc_context_.NUM_MEM_BLOCKS_PER_SUPER_BLOCK_ *
+               slab_alloc_context_.BITMAP_SIZE_),
+          0xFF,
+          slab_alloc_context_.MEM_BLOCK_SIZE_ *
+              slab_alloc_context_.NUM_MEM_BLOCKS_PER_SUPER_BLOCK_ *
+              sizeof(uint32_t)));
+    }
+
+    // initializing the slab context:
+    slab_alloc_context_.initParameters(d_super_blocks_, hash_coef_);
+  }
+
+  // =========
+  // destructor:
+  // =========
+  ~SlabAllocLight() { CHECK_ERROR(cudaFree(d_super_blocks_)); }
 };

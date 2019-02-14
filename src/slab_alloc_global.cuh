@@ -14,6 +14,10 @@
  * limitations under the License.
  */
 #pragma once
+#include <random>
+#include <iostream>
+#include <stdio.h>
+
 #define CHECK_ERROR(call)                                     \
   do {                                                        \
     cudaError_t err = call;                                   \
@@ -23,3 +27,6 @@
       exit(EXIT_FAILURE);                                     \
     }                                                         \
   } while (0)
+
+using SlabAllocAddressT = uint32_t;
+using SlabAllocAddressIndexT = uint32_t;
