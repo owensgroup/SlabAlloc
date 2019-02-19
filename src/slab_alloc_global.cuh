@@ -29,4 +29,3 @@
   } while (0)
 
 using SlabAllocAddressT = uint32_t;
-using SlabAllocAddressIndexT = uint32_t;

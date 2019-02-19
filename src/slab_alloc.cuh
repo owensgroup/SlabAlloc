@@ -77,41 +77,46 @@ class SlabAllocLightContext {
   // some helper inline address functions:
   // =========
   __device__ __host__ __forceinline__ uint32_t
-  get_super_block_index(SlabAllocAddressT address) const {
+  getSuperBlockIndex(SlabAllocAddressT address) const {
     return address >> SUPER_BLOCK_BIT_OFFSET_ALLOC_;
   }
 
   __device__ __host__ __forceinline__ uint32_t
-  get_mem_block_index(SlabAllocAddressT address) const {
+  getMemBlockIndex(SlabAllocAddressT address) const {
     return ((address >> MEM_BLOCK_BIT_OFFSET_ALLOC_) & 0x1FFFF);
   }
 
-  __device__ __host__ __forceinline__ SlabAllocAddressIndexT
-  get_mem_block_address(SlabAllocAddressT address) const {
-    return (MEM_BLOCK_OFFSET_ + get_mem_block_index(address) * MEM_BLOCK_SIZE_);
+  __device__ __host__ __forceinline__ SlabAllocAddressT
+  getMemBlockAddress(SlabAllocAddressT address) const {
+    return (MEM_BLOCK_OFFSET_ + getMemBlockIndex(address) * MEM_BLOCK_SIZE_);
   }
 
   __device__ __host__ __forceinline__ uint32_t
-  get_mem_unit_index(SlabAllocAddressT address) const {
+  getMemUnitIndex(SlabAllocAddressT address) const {
     return address & 0x3FF;
   }
 
-  __device__ __host__ __forceinline__ SlabAllocAddressIndexT
-  get_mem_unit_address(SlabAllocAddressT address) {
-    return get_mem_unit_index(address) * MEM_UNIT_SIZE_;
+  __device__ __host__ __forceinline__ SlabAllocAddressT
+  getMemUnitAddress(SlabAllocAddressT address) {
+    return getMemUnitIndex(address) * MEM_UNIT_SIZE_;
+  }
+
+  __device__ __forceinline__ uint32_t* getPointerFromSlab(
+      const SlabAllocAddressT& next,
+      const uint32_t& laneId) {
+    return reinterpret_cast<uint32_t*>(d_super_blocks_) + addressDecoder(next) +
+           laneId;
   }
 
   // called at the beginning of the kernel:
-  __device__ __forceinline__ void create_mem_block_index(
-      uint32_t global_warp_id) {
+  __device__ __forceinline__ void createMemBlockIndex(uint32_t global_warp_id) {
     super_block_index_ = global_warp_id % num_super_blocks_;
     resident_index_ =
         (hash_coef_ * global_warp_id) >> (32 - LOG_NUM_MEM_BLOCKS_);
   }
 
   // called when the allocator fails to find an empty unit to allocate:
-  __device__ __forceinline__ void update_mem_block_index(
-      uint32_t global_warp_id) {
+  __device__ __forceinline__ void updateMemBlockIndex(uint32_t global_warp_id) {
     num_attempts_++;
     super_block_index_++;
     super_block_index_ =
@@ -125,10 +130,10 @@ class SlabAllocLightContext {
   }
 
   // Objective: each warp selects its own resident warp allocator:
-  __device__ __forceinline__ void init_allocator(uint32_t& tid,
-                                                 uint32_t& laneId) {
+  __device__ __forceinline__ void initAllocator(uint32_t& tid,
+                                                uint32_t& laneId) {
     // hashing the memory block to be used:
-    create_mem_block_index(tid >> 5);
+    createMemBlockIndex(tid >> 5);
 
     // loading the assigned memory block:
     resident_bitmap_ =
@@ -137,7 +142,7 @@ class SlabAllocLightContext {
     allocated_index_ = 0xFFFFFFFF;
   }
 
-  __device__ __forceinline__ uint32_t warp_allocate(uint32_t& laneId) {
+  __device__ __forceinline__ uint32_t warpAllocate(const uint32_t& laneId) {
     // tries and allocate a new memory units within the resident memory block
     // if it returns 0xFFFFFFFF, then there was not any empty memory unit
     // a new resident block should be chosen, and repeat again
@@ -155,10 +160,10 @@ class SlabAllocLightContext {
 
     while (allocated_result == 0xFFFFFFFF) {
       empty_lane = __ffs(~resident_bitmap_) - 1;
-      free_lane = __ballot(empty_lane >= 0);
+      free_lane = __ballot_sync(0xFFFFFFFF, empty_lane >= 0);
       if (free_lane == 0) {
         // all bitmaps are full: need to be rehashed again:
-        update_mem_block_index((threadIdx.x + blockIdx.x * blockDim.x) >> 5);
+        updateMemBlockIndex((threadIdx.x + blockIdx.x * blockDim.x) >> 5);
         read_bitmap = resident_bitmap_;
         continue;
       }
@@ -181,13 +186,13 @@ class SlabAllocLightContext {
         }
       }
       // asking for the allocated result;
-      allocated_result = __shfl(allocated_result, src_lane);
+      allocated_result = __shfl_sync(0xFFFFFFFF, allocated_result, src_lane);
     }
     return allocated_result;
   }
 
-  __device__ __forceinline__ uint32_t warp_allocate_bulk(uint32_t& laneId,
-                                                         const uint32_t k) {
+  __device__ __forceinline__ uint32_t warpAllocateBulk(uint32_t& laneId,
+                                                       const uint32_t k) {
     // tries and allocate k consecutive memory units within the resident memory
     // block if it returns 0xFFFFFFFF, then there was not any empty memory unit
     // a new resident block should be chosen, and repeat again
@@ -210,15 +215,15 @@ class SlabAllocLightContext {
               ~resident_bitmap_)));  // reversing the order of assigning lanes
                                      // compared to single allocations
       const uint32_t mask = ((1 << k) - 1) << (empty_lane - k + 1);
-      // if(laneId == 0) printf(" # # #: resident_bitmap = %x, empty_lane = %d,
       // mask = %x\n", context.resident_bitmap, empty_lane, mask);
-      free_lane = __ballot(
+      free_lane = __ballot_sync(
+          0xFFFFFFFF,
           (empty_lane >= (k - 1)) &&
-          !(resident_bitmap_ &
-            mask));  // update true statement to make sure everything fits
+              !(resident_bitmap_ &
+                mask));  // update true statement to make sure everything fits
       if (free_lane == 0) {
         // all bitmaps are full: need to be rehashed again:
-        update_mem_block_index((threadIdx.x + blockIdx.x * blockDim.x) >> 5);
+        updateMemBlockIndex((threadIdx.x + blockIdx.x * blockDim.x) >> 5);
         read_bitmap = resident_bitmap_;
         continue;
       }
@@ -242,7 +247,7 @@ class SlabAllocLightContext {
         }
       }
       // asking for the allocated result;
-      allocated_result = __shfl(allocated_result, src_lane);
+      allocated_result = __shfl_sync(0xFFFFFFFF, allocated_result, src_lane);
     }
     return allocated_result;
   }
@@ -252,29 +257,30 @@ class SlabAllocLightContext {
   Since it is untouched, there shouldn't be any worries for the actual memory
   contents to be reset again.
 */
-  __device__ __forceinline__ void free_untouched(SlabAllocAddressT ptr) {
-    atomicAnd(d_super_blocks_ + get_super_block_index(ptr) * SUPER_BLOCK_SIZE_ +
-                  get_mem_block_index(ptr) * BITMAP_SIZE_ +
-                  (get_mem_unit_index(ptr) >> 5),
-              ~(1 << (get_mem_unit_index(ptr) & 0x1F)));
+  __device__ __forceinline__ void freeUntouched(SlabAllocAddressT ptr) {
+    atomicAnd(d_super_blocks_ + getSuperBlockIndex(ptr) * SUPER_BLOCK_SIZE_ +
+                  getMemBlockIndex(ptr) * BITMAP_SIZE_ +
+                  (getMemUnitIndex(ptr) >> 5),
+              ~(1 << (getMemUnitIndex(ptr) & 0x1F)));
   }
 
   __host__ __device__ __forceinline__ SlabAllocAddressT
-  address_decoder(SlabAllocAddressIndexT address_ptr_index) {
-    return get_super_block_index(address_ptr_index) * SUPER_BLOCK_SIZE_ +
-           get_mem_block_address(address_ptr_index) +
-           get_mem_unit_index(address_ptr_index) * MEM_UNIT_WARP_MULTIPLES_ *
+  addressDecoder(SlabAllocAddressT address_ptr_index) {
+    return getSuperBlockIndex(address_ptr_index) * SUPER_BLOCK_SIZE_ +
+           getMemBlockAddress(address_ptr_index) +
+           getMemUnitIndex(address_ptr_index) * MEM_UNIT_WARP_MULTIPLES_ *
                WARP_SIZE_;
   }
 
+
   __host__ __device__ __forceinline__ void print_address(
-      SlabAllocAddressIndexT address_ptr_index) {
+      SlabAllocAddressT address_ptr_index) {
     printf(
         "Super block Index: %d, Memory block index: %d, Memory unit index: "
         "%d\n",
-        get_super_block_index(address_ptr_index),
-        get_mem_block_index(address_ptr_index),
-        get_mem_unit_index(address_ptr_index));
+        getSuperBlockIndex(address_ptr_index),
+        getMemBlockIndex(address_ptr_index),
+        getMemUnitIndex(address_ptr_index));
   }
 
  private:
