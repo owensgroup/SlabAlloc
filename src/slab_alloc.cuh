@@ -108,6 +108,13 @@ class SlabAllocLightContext {
            laneId;
   }
 
+  __device__ __forceinline__ uint32_t* getPointerForBitmap(
+      const uint32_t super_block_index,
+      const uint32_t bitmap_index) {
+    return d_super_blocks_ + super_block_index * SUPER_BLOCK_SIZE_ +
+           bitmap_index;
+  }
+
   // called at the beginning of the kernel:
   __device__ __forceinline__ void createMemBlockIndex(uint32_t global_warp_id) {
     super_block_index_ = global_warp_id % num_super_blocks_;
