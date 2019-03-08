@@ -13,4 +13,28 @@
  * implied. See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "slab_alloc.cuh" 
+
+#include <stdio.h>
+#include <cuda_runtime_api.h>
+#include <cuda.h>
+
+#include "../src/slab_alloc.cuh"
+#define DEVICE_ID 0
+
+int main(int argc, char** argv){
+	//=========
+	int devCount;
+  cudaGetDeviceCount(&devCount);
+  cudaDeviceProp devProp;
+  if(devCount){
+    cudaSetDevice(DEVICE_ID); // be changed later
+    cudaGetDeviceProperties(&devProp, DEVICE_ID);
+  }
+  printf("Device: %s\n", devProp.name);
+
+  auto slab_alloc = new SlabAllocLight<8,32,1>();
+  printf("slab alloc constructed\n");
+
+  delete slab_alloc;
+  return 0;
+}
