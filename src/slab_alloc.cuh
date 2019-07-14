@@ -33,28 +33,33 @@ class SlabAllocLightContext {
   static constexpr uint32_t NUM_BITMAP_PER_MEM_BLOCK_ = 32;
   static constexpr uint32_t BITMAP_SIZE_ = 32;
   static constexpr uint32_t WARP_SIZE_ = 32;
-  static constexpr uint32_t MEM_UNIT_SIZE_ =
-      MEM_UNIT_WARP_MULTIPLES_ * WARP_SIZE_;
+  static constexpr uint32_t MEM_UNIT_SIZE_ = MEM_UNIT_WARP_MULTIPLES_ * WARP_SIZE_;
   static constexpr uint32_t SUPER_BLOCK_BIT_OFFSET_ALLOC_ = 27;
   static constexpr uint32_t MEM_BLOCK_BIT_OFFSET_ALLOC_ = 10;
   static constexpr uint32_t MEM_UNIT_BIT_OFFSET_ALLOC_ = 5;
-  static constexpr uint32_t NUM_MEM_BLOCKS_PER_SUPER_BLOCK_ =
-      (1 << LOG_NUM_MEM_BLOCKS_);
-  static constexpr uint32_t MEM_BLOCK_SIZE_ =
-      NUM_MEM_UNITS_PER_BLOCK_ * MEM_UNIT_SIZE_;
+  static constexpr uint32_t NUM_MEM_BLOCKS_PER_SUPER_BLOCK_ = (1 << LOG_NUM_MEM_BLOCKS_);
+  static constexpr uint32_t MEM_BLOCK_SIZE_ = NUM_MEM_UNITS_PER_BLOCK_ * MEM_UNIT_SIZE_;
   static constexpr uint32_t SUPER_BLOCK_SIZE_ =
       ((BITMAP_SIZE_ + MEM_BLOCK_SIZE_) * NUM_MEM_BLOCKS_PER_SUPER_BLOCK_);
   static constexpr uint32_t MEM_BLOCK_OFFSET_ =
       (BITMAP_SIZE_ * NUM_MEM_BLOCKS_PER_SUPER_BLOCK_);
   static constexpr uint32_t num_super_blocks_ = NUM_SUPER_BLOCKS_ALLOCATOR_;
 
-  SlabAllocLightContext()
-      : d_super_blocks_(nullptr),
-        hash_coef_(0),
-        num_attempts_(0),
-        resident_index_(0),
-        super_block_index_(0),
-        allocated_index_(0) {}
+  __device__ __host__ SlabAllocLightContext()
+      : d_super_blocks_(nullptr)
+      , hash_coef_(0)
+      , num_attempts_(0)
+      , resident_index_(0)
+      , super_block_index_(0)
+      , allocated_index_(0) {}
+
+  __device__ __host__ SlabAllocLightContext(const SlabAllocLightContext& rhs)
+      : d_super_blocks_(rhs.d_super_blocks_)
+      , hash_coef_(rhs.hash_coef_)
+      , num_attempts_(0)
+      , resident_index_(0)
+      , super_block_index_(0)
+      , allocated_index_(0) {}
 
   SlabAllocLightContext& operator=(const SlabAllocLightContext& rhs) {
     d_super_blocks_ = rhs.d_super_blocks_;
@@ -66,11 +71,16 @@ class SlabAllocLightContext {
     return *this;
   }
 
-  ~SlabAllocLightContext() {}
+  __device__ __host__ ~SlabAllocLightContext() {}
 
-  void initParameters(uint32_t* d_super_block, uint32_t hash_coef) {
+  __device__ __host__ void initParameters(uint32_t* d_super_block, uint32_t hash_coef) {
     d_super_blocks_ = d_super_block;
     hash_coef_ = hash_coef;
+  }
+
+  __device__ __host__ void copyParameters(const SlabAllocLightContext& rhs) {
+    d_super_blocks_ = rhs.d_super_blocks_;
+    hash_coef_ = rhs.hash_coef_;
   }
 
   // =========
@@ -101,25 +111,21 @@ class SlabAllocLightContext {
     return getMemUnitIndex(address) * MEM_UNIT_SIZE_;
   }
 
-  __device__ __forceinline__ uint32_t* getPointerFromSlab(
-      const SlabAllocAddressT& next,
-      const uint32_t& laneId) {
-    return reinterpret_cast<uint32_t*>(d_super_blocks_) + addressDecoder(next) +
-           laneId;
+  __device__ __forceinline__ uint32_t* getPointerFromSlab(const SlabAllocAddressT& next,
+                                                          const uint32_t& laneId) {
+    return reinterpret_cast<uint32_t*>(d_super_blocks_) + addressDecoder(next) + laneId;
   }
 
   __device__ __forceinline__ uint32_t* getPointerForBitmap(
       const uint32_t super_block_index,
       const uint32_t bitmap_index) {
-    return d_super_blocks_ + super_block_index * SUPER_BLOCK_SIZE_ +
-           bitmap_index;
+    return d_super_blocks_ + super_block_index * SUPER_BLOCK_SIZE_ + bitmap_index;
   }
 
   // called at the beginning of the kernel:
   __device__ __forceinline__ void createMemBlockIndex(uint32_t global_warp_id) {
     super_block_index_ = global_warp_id % num_super_blocks_;
-    resident_index_ =
-        (hash_coef_ * global_warp_id) >> (32 - LOG_NUM_MEM_BLOCKS_);
+    resident_index_ = (hash_coef_ * global_warp_id) >> (32 - LOG_NUM_MEM_BLOCKS_);
   }
 
   // called when the allocator fails to find an empty unit to allocate:
@@ -128,24 +134,21 @@ class SlabAllocLightContext {
     super_block_index_++;
     super_block_index_ =
         (super_block_index_ == num_super_blocks_) ? 0 : super_block_index_;
-    resident_index_ = (hash_coef_ * (global_warp_id + num_attempts_)) >>
-                      (32 - LOG_NUM_MEM_BLOCKS_);
+    resident_index_ =
+        (hash_coef_ * (global_warp_id + num_attempts_)) >> (32 - LOG_NUM_MEM_BLOCKS_);
     // loading the assigned memory block:
-    resident_bitmap_ =
-        *((d_super_blocks_ + super_block_index_ * SUPER_BLOCK_SIZE_) +
-          resident_index_ * BITMAP_SIZE_ + (threadIdx.x & 0x1f));
+    resident_bitmap_ = *((d_super_blocks_ + super_block_index_ * SUPER_BLOCK_SIZE_) +
+                         resident_index_ * BITMAP_SIZE_ + (threadIdx.x & 0x1f));
   }
 
   // Objective: each warp selects its own resident warp allocator:
-  __device__ __forceinline__ void initAllocator(uint32_t& tid,
-                                                uint32_t& laneId) {
+  __device__ __forceinline__ void initAllocator(uint32_t& tid, uint32_t& laneId) {
     // hashing the memory block to be used:
     createMemBlockIndex(tid >> 5);
 
     // loading the assigned memory block:
-    resident_bitmap_ =
-        *(d_super_blocks_ + super_block_index_ * SUPER_BLOCK_SIZE_ +
-          resident_index_ * BITMAP_SIZE_ + laneId);
+    resident_bitmap_ = *(d_super_blocks_ + super_block_index_ * SUPER_BLOCK_SIZE_ +
+                         resident_index_ * BITMAP_SIZE_ + laneId);
     allocated_index_ = 0xFFFFFFFF;
   }
 
@@ -176,17 +179,16 @@ class SlabAllocLightContext {
       }
       uint32_t src_lane = __ffs(free_lane) - 1;
       if (src_lane == laneId) {
-        read_bitmap =
-            atomicCAS(d_super_blocks_ + super_block_index_ * SUPER_BLOCK_SIZE_ +
-                          resident_index_ * BITMAP_SIZE_ + laneId,
-                      resident_bitmap_, resident_bitmap_ | (1 << empty_lane));
+        read_bitmap = atomicCAS(d_super_blocks_ + super_block_index_ * SUPER_BLOCK_SIZE_ +
+                                    resident_index_ * BITMAP_SIZE_ + laneId,
+                                resident_bitmap_,
+                                resident_bitmap_ | (1 << empty_lane));
         if (read_bitmap == resident_bitmap_) {
           // successful attempt:
           resident_bitmap_ |= (1 << empty_lane);
-          allocated_result =
-              (super_block_index_ << SUPER_BLOCK_BIT_OFFSET_ALLOC_) |
-              (resident_index_ << MEM_BLOCK_BIT_OFFSET_ALLOC_) |
-              (laneId << MEM_UNIT_BIT_OFFSET_ALLOC_) | empty_lane;
+          allocated_result = (super_block_index_ << SUPER_BLOCK_BIT_OFFSET_ALLOC_) |
+                             (resident_index_ << MEM_BLOCK_BIT_OFFSET_ALLOC_) |
+                             (laneId << MEM_UNIT_BIT_OFFSET_ALLOC_) | empty_lane;
         } else {
           // Not successful: updating the current bitmap
           resident_bitmap_ = read_bitmap;
@@ -218,9 +220,8 @@ class SlabAllocLightContext {
     while (allocated_result == 0xFFFFFFFF) {
       empty_lane =
           32 -
-          (__ffs(__brev(
-              ~resident_bitmap_)));  // reversing the order of assigning lanes
-                                     // compared to single allocations
+          (__ffs(__brev(~resident_bitmap_)));  // reversing the order of assigning lanes
+                                               // compared to single allocations
       const uint32_t mask = ((1 << k) - 1) << (empty_lane - k + 1);
       // mask = %x\n", context.resident_bitmap, empty_lane, mask);
       free_lane = __ballot_sync(
@@ -237,17 +238,16 @@ class SlabAllocLightContext {
       uint32_t src_lane = __ffs(free_lane) - 1;
 
       if (src_lane == laneId) {
-        read_bitmap =
-            atomicCAS(d_super_blocks_ + super_block_index_ * SUPER_BLOCK_SIZE_ +
-                          resident_index_ * BITMAP_SIZE_ + laneId,
-                      resident_bitmap_, resident_bitmap_ | mask);
+        read_bitmap = atomicCAS(d_super_blocks_ + super_block_index_ * SUPER_BLOCK_SIZE_ +
+                                    resident_index_ * BITMAP_SIZE_ + laneId,
+                                resident_bitmap_,
+                                resident_bitmap_ | mask);
         if (read_bitmap == resident_bitmap_) {
           // successful attempt:
           resident_bitmap_ |= mask;
-          allocated_result =
-              (super_block_index_ << SUPER_BLOCK_BIT_OFFSET_ALLOC_) |
-              (resident_index_ << MEM_BLOCK_BIT_OFFSET_ALLOC_) |
-              (laneId << MEM_UNIT_BIT_OFFSET_ALLOC_) | empty_lane;
+          allocated_result = (super_block_index_ << SUPER_BLOCK_BIT_OFFSET_ALLOC_) |
+                             (resident_index_ << MEM_BLOCK_BIT_OFFSET_ALLOC_) |
+                             (laneId << MEM_UNIT_BIT_OFFSET_ALLOC_) | empty_lane;
         } else {
           // Not successful: updating the current bitmap
           resident_bitmap_ = read_bitmap;
@@ -266,8 +266,7 @@ class SlabAllocLightContext {
 */
   __device__ __forceinline__ void freeUntouched(SlabAllocAddressT ptr) {
     atomicAnd(d_super_blocks_ + getSuperBlockIndex(ptr) * SUPER_BLOCK_SIZE_ +
-                  getMemBlockIndex(ptr) * BITMAP_SIZE_ +
-                  (getMemUnitIndex(ptr) >> 5),
+                  getMemBlockIndex(ptr) * BITMAP_SIZE_ + (getMemUnitIndex(ptr) >> 5),
               ~(1 << (getMemUnitIndex(ptr) & 0x1F)));
   }
 
@@ -275,10 +274,8 @@ class SlabAllocLightContext {
   addressDecoder(SlabAllocAddressT address_ptr_index) {
     return getSuperBlockIndex(address_ptr_index) * SUPER_BLOCK_SIZE_ +
            getMemBlockAddress(address_ptr_index) +
-           getMemUnitIndex(address_ptr_index) * MEM_UNIT_WARP_MULTIPLES_ *
-               WARP_SIZE_;
+           getMemUnitIndex(address_ptr_index) * MEM_UNIT_WARP_MULTIPLES_ * WARP_SIZE_;
   }
-
 
   __host__ __device__ __forceinline__ void print_address(
       SlabAllocAddressT address_ptr_index) {
@@ -288,6 +285,21 @@ class SlabAllocLightContext {
         getSuperBlockIndex(address_ptr_index),
         getMemBlockIndex(address_ptr_index),
         getMemUnitIndex(address_ptr_index));
+  }
+
+  __device__ __forceinline__ void print_info() {
+    printf(
+        "SlabAllocLightContext: Thread: %d, d_super_blocks_: %p, hash_coef_: %u, "
+        "num_attempts_: %u, "
+        "resident_index_: %u, resident_bitmap_: %x, super_block_index_: %u\n",
+        threadIdx.x,
+        d_super_blocks_,
+        hash_coef_,
+        num_attempts_,
+        resident_index_,
+        resident_bitmap_,
+        super_block_index_,
+        allocated_index_);
   }
 
  private:
@@ -341,24 +353,22 @@ class SlabAllocLight {
     // single array
     CHECK_ERROR(cudaMalloc((void**)&d_super_blocks_,
                            slab_alloc_context_.SUPER_BLOCK_SIZE_ *
-                               slab_alloc_context_.num_super_blocks_ *
-                               sizeof(uint32_t)));
+                               slab_alloc_context_.num_super_blocks_ * sizeof(uint32_t)));
 
     for (int i = 0; i < slab_alloc_context_.num_super_blocks_; i++) {
       // setting bitmaps into zeros:
-      CHECK_ERROR(cudaMemset(
-          d_super_blocks_ + i * slab_alloc_context_.SUPER_BLOCK_SIZE_, 0x00,
-          slab_alloc_context_.NUM_MEM_BLOCKS_PER_SUPER_BLOCK_ *
-              slab_alloc_context_.BITMAP_SIZE_ * sizeof(uint32_t)));
+      CHECK_ERROR(cudaMemset(d_super_blocks_ + i * slab_alloc_context_.SUPER_BLOCK_SIZE_,
+                             0x00,
+                             slab_alloc_context_.NUM_MEM_BLOCKS_PER_SUPER_BLOCK_ *
+                                 slab_alloc_context_.BITMAP_SIZE_ * sizeof(uint32_t)));
       // setting empty memory units into ones:
-      CHECK_ERROR(cudaMemset(
-          d_super_blocks_ + i * slab_alloc_context_.SUPER_BLOCK_SIZE_ +
-              (slab_alloc_context_.NUM_MEM_BLOCKS_PER_SUPER_BLOCK_ *
-               slab_alloc_context_.BITMAP_SIZE_),
-          0xFF,
-          slab_alloc_context_.MEM_BLOCK_SIZE_ *
-              slab_alloc_context_.NUM_MEM_BLOCKS_PER_SUPER_BLOCK_ *
-              sizeof(uint32_t)));
+      CHECK_ERROR(cudaMemset(d_super_blocks_ + i * slab_alloc_context_.SUPER_BLOCK_SIZE_ +
+                                 (slab_alloc_context_.NUM_MEM_BLOCKS_PER_SUPER_BLOCK_ *
+                                  slab_alloc_context_.BITMAP_SIZE_),
+                             0xFF,
+                             slab_alloc_context_.MEM_BLOCK_SIZE_ *
+                                 slab_alloc_context_.NUM_MEM_BLOCKS_PER_SUPER_BLOCK_ *
+                                 sizeof(uint32_t)));
     }
 
     // initializing the slab context:
