@@ -18,6 +18,7 @@
 #include <stdint.h>
 #include <iostream>
 #include "slab_alloc_global.cuh"
+#include "slab_alloc_kernels.cuh" 
 
 /*
  * This class does not own any memory, and will be shallowly copied into device
@@ -388,5 +389,57 @@ class SlabAllocLight {
                         MEM_UNIT_WARP_MULTIPLES_>*
   getContextPtr() {
     return &slab_alloc_context_;
+  }
+  
+  /*
+  * Compute the total number of bytes used by the allocator
+  */
+  int computeBytesUsed(int print_per_block_stats = 0){
+    // counting total number of allocated memory units:
+    const uint32_t blocksize = 128;
+    const uint32_t num_super_blocks = slab_alloc_context_.num_super_blocks_;
+    uint32_t* h_count_super_blocks = new uint32_t[num_super_blocks];
+    uint32_t* d_count_super_blocks;
+    CHECK_ERROR(cudaMalloc((void**)&d_count_super_blocks, sizeof(uint32_t) * num_super_blocks));
+    CHECK_ERROR(cudaMemset(d_count_super_blocks, 0, sizeof(uint32_t) * num_super_blocks));
+
+    int num_mem_units = slab_alloc_context_.NUM_MEM_BLOCKS_PER_SUPER_BLOCK_ * 32;
+    int num_cuda_blocks = (num_mem_units + blocksize - 1) / blocksize;
+
+
+    count_allocated_memory_units<<<num_cuda_blocks, blocksize>>>(d_count_super_blocks,
+                                                             slab_alloc_context_);
+    CHECK_ERROR(cudaMemcpy(h_count_super_blocks,
+                            d_count_super_blocks,
+                            sizeof(uint32_t) * num_super_blocks,
+                            cudaMemcpyDeviceToHost));
+    // printing stats per super block:
+    if (print_per_block_stats == 1) {
+      int total_allocated = 0;
+      for (int i = 0; i < num_super_blocks; i++) {
+        printf("(%d: %d -- %f) \t",
+               i,
+               h_count_super_blocks[i],
+               double(h_count_super_blocks[i]) / double(1024 * num_mem_units / 32));
+        if (i % 4 == 3)
+          printf("\n");
+        total_allocated += h_count_super_blocks[i];
+      }
+      printf("\n");
+      printf("Total number of allocated memory units: %d\n", total_allocated);
+    }
+    
+    // count memory units
+    int total_mem_units = 0;
+    for (int i = 0; i < num_super_blocks; i++)
+      total_mem_units += h_count_super_blocks[i];
+
+    int total_bytes_used =  total_mem_units * slab_alloc_context_.WARP_SIZE_ * (sizeof(uint32_t));
+    
+    if (d_count_super_blocks)
+      CHECK_ERROR(cudaFree(d_count_super_blocks));
+    delete[] h_count_super_blocks;
+
+    return total_bytes_used;
   }
 };
